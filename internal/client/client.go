@@ -12,6 +12,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"time"
@@ -170,6 +171,14 @@ func digInt(obj any, keys ...string) int64 {
 		return int64(v)
 	case int:
 		return int64(v)
+	case string:
+		// Some GetContact responses (e.g. serverKey) arrive as JSON strings.
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			return int64(f)
+		}
 	}
 	return 0
 }
@@ -516,7 +525,7 @@ var codeValidRe = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$`)
 // vfkCheckAttempts/Interval bound how long Register polls /v2.0/check for the
 // WhatsApp confirmation (gtc.py blocks on input(); we poll instead).
 const (
-	vfkCheckAttempts = 30
+	vfkCheckAttempts = 900 // ~30min at 2s: generous window (gtc.py blocks indefinitely)
 	vfkCheckInterval = 2 * time.Second
 )
 
@@ -552,7 +561,7 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 	token := digStr(parsed, "result", "token")
 	serverKey := digInt(parsed, "result", "serverKey")
 	if token == "" || serverKey == 0 {
-		return Credential{}, fmt.Errorf("register: missing token/serverKey in response")
+		return Credential{}, fmt.Errorf("register: missing token/serverKey in response: %v", parsed)
 	}
 	finalKey := crypto.DHFinalKey(priv, serverKey)
 
@@ -670,6 +679,9 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 		if sessionID != "" {
 			break
 		}
+		if attempt > 0 && attempt%15 == 0 {
+			fmt.Printf("Still waiting for WhatsApp confirmation (%d/%d)...\n", attempt+1, vfkCheckAttempts)
+		}
 		time.Sleep(vfkCheckInterval)
 	}
 	if sessionID == "" {
@@ -695,6 +707,12 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 }
 
 func extractCode(deeplink string) string {
+	// The deeplink is URL-encoded (e.g. %2A for *); gtc.py runs the regex over
+	// urllib.parse.unquote(deeplink), so decode first.
+	decoded, err := url.PathUnescape(deeplink)
+	if err == nil {
+		deeplink = decoded
+	}
 	for _, m := range codeRe.FindAllStringSubmatch(deeplink, -1) {
 		if len(m) >= 2 && codeValidRe.MatchString(m[1]) {
 			return m[1]

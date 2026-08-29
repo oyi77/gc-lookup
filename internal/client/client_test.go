@@ -812,3 +812,21 @@ func TestRegisterPollsCheckUntilConfirmed(t *testing.T) {
 		t.Fatalf("/v2.0/check called %d times, want >= 2 (polling retry)", checkCalls)
 	}
 }
+
+func TestDigIntParsesStringServerKey(t *testing.T) {
+	// The live GetContact register response returns serverKey as a JSON string.
+	if got := digInt(map[string]any{"serverKey": "685505220323"}, "serverKey"); got != 685505220323 {
+		t.Errorf("digInt(string) = %d, want 685505220323", got)
+	}
+	if got := digInt(map[string]any{"x": "not-a-number"}, "x"); got != 0 {
+		t.Errorf("digInt(non-numeric string) = %d, want 0", got)
+	}
+}
+
+func TestExtractCodeURLEncodedDeeplink(t *testing.T) {
+	// Live GetContact deeplinks are URL-encoded: %2A wraps the code.
+	got := extractCode("https://wa.me/+905397766590?text=%2AvmVC9-KPrE5-F5dvG-E5lwi%2A")
+	if got != "vmVC9-KPrE5-F5dvG-E5lwi" {
+		t.Fatalf("extractCode(url-encoded) = %q, want vmVC9-KPrE5-F5dvG-E5lwi", got)
+	}
+}

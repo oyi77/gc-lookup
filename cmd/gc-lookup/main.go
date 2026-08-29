@@ -54,7 +54,7 @@ Usage:
   gc-lookup subscription [--account NAME] [--rotate]
   gc-lookup refresh-code [--account NAME]
   gc-lookup verify-code <code> [--account NAME]
-  gc-lookup register <phone> [--name desc]
+  gc-lookup register [--name desc] <phone>
   gc-lookup cred list|use <name>|remove <name>|path
   gc-lookup help
 
@@ -354,7 +354,7 @@ func cmdRegister(args []string) {
 		os.Exit(2)
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: gc-lookup register <phone> [--name desc]")
+		fmt.Fprintln(os.Stderr, "usage: gc-lookup register [--name desc] <phone>")
 		os.Exit(2)
 	}
 	phone := fs.Arg(0)
