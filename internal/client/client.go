@@ -91,7 +91,11 @@ func newDeviceID() string {
 }
 
 // marshalRaw serializes a payload EXACTLY like Python json.dumps(payload,
-// ensure_ascii=False) — default separators (", " and ": "), no HTML escaping.
+// ensure_ascii=False): default separators (", " and ": "), no HTML escaping.
+// Go's encoder emits compact JSON, so after encoding we insert the spaces
+// outside string literals. Go sorts map keys alphabetically; for the reference
+// payloads whose dict insertion order is alphabetical the output is
+// byte-identical to gtc.py (JSON object order is semantically irrelevant).
 func marshalRaw(v any) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
@@ -99,10 +103,35 @@ func marshalRaw(v any) ([]byte, error) {
 	if err := enc.Encode(v); err != nil {
 		return nil, err
 	}
+	compact := buf.Bytes()
 	// Encoder appends a trailing newline; strip it to match json.dumps.
-	out := buf.Bytes()
-	if n := len(out); n > 0 && out[n-1] == '\n' {
-		out = out[:n-1]
+	if n := len(compact); n > 0 && compact[n-1] == '\n' {
+		compact = compact[:n-1]
+	}
+	// Insert Python default separators (", " and ": ") outside string values.
+	out := make([]byte, 0, len(compact)+64)
+	inStr := false
+	for i := 0; i < len(compact); i++ {
+		c := compact[i]
+		out = append(out, c)
+		if inStr {
+			switch c {
+			case '\\':
+				if i+1 < len(compact) {
+					out = append(out, compact[i+1])
+					i++
+				}
+			case '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inStr = true
+		case ',', ':':
+			out = append(out, ' ')
+		}
 	}
 	return out, nil
 }

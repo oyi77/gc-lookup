@@ -710,3 +710,34 @@ func TestRegisterVfkCountryNon200(t *testing.T) {
 		t.Fatalf("Register error = %v, want vfk country: HTTP 400", err)
 	}
 }
+
+func TestMarshalRawMatchesPythonReference(t *testing.T) {
+	// This exact payload mirrors gtc.py's reg_body dict. The expected output
+	// was computed from Python:
+	//   json.dumps(reg_body, ensure_ascii=False)
+	// Go's marshalRaw must produce the same bytes (alphabetical map-key order
+	// happens to match the reference's insertion order for this payload).
+	payload := map[string]any{
+		"carrierCountryCode": "510",
+		"carrierName":        "Indosat Ooredoo",
+		"carrierNetworkCode": "01",
+		"countryCode":        "id",
+		"deepLink":           nil,
+		"deviceName":         "SM-G977N",
+		"deviceType":         "Android",
+		"email":              nil,
+		"notificationToken":  "",
+		"oldToken":           nil,
+		"peerKey":            int64(1234567),
+		"timeZone":           "Asia/Bangkok",
+		"token":              "",
+	}
+	got, err := marshalRaw(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = `{"carrierCountryCode": "510", "carrierName": "Indosat Ooredoo", "carrierNetworkCode": "01", "countryCode": "id", "deepLink": null, "deviceName": "SM-G977N", "deviceType": "Android", "email": null, "notificationToken": "", "oldToken": null, "peerKey": 1234567, "timeZone": "Asia/Bangkok", "token": ""}`
+	if string(got) != want {
+		t.Fatalf("marshalRaw = %q\n       want = %q", string(got), want)
+	}
+}
