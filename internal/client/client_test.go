@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -266,6 +267,7 @@ func TestVerifyCode(t *testing.T) {
 // and the test would abort — so reaching ValidationDate proves key agreement.
 func TestRegisterHandshake(t *testing.T) {
 	finalKey := ""
+	vstart := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -349,12 +351,36 @@ func TestRegisterHandshake(t *testing.T) {
 			t.Fatalf("%s: x-token header = %q", r.URL.Path, got)
 		}
 
+		// Fidelity: exact payload shapes as gtc.py defines them.
+		switch r.URL.Path {
+		case "/v2.8/ad-settings":
+			if len(pl) != 2 || pl["source"] != "init" {
+				t.Fatalf("ad-settings payload = %v, want exactly {source:init, token}", pl)
+			}
+		case "/v2.8/country":
+			if len(pl) != 2 || pl["countryCode"] != "ID" {
+				t.Fatalf("country payload = %v, want exactly {countryCode:ID, token}", pl)
+			}
+		case "/v2.8/email-code-validate/start":
+			email, _ := pl["email"].(string)
+			fullName, _ := pl["fullName"].(string)
+			if !regexp.MustCompile(`^user[0-9]{8}@gmail\.com$`).MatchString(email) {
+				t.Fatalf("email = %q, want user<8 digits>@gmail.com (gtc.py randint(10**7, 10**8-1))", email)
+			}
+			if !regexp.MustCompile(`^User[0-9]{4,6}$`).MatchString(fullName) {
+				t.Fatalf("fullName = %q, want User<4-6 digits> (gtc.py randint(1000, 999999))", fullName)
+			}
+		}
+
 		var result map[string]any
 		var status int
 		switch r.URL.Path {
 		case "/v2.8/init-basic", "/v2.8/init-intro":
 			status = http.StatusCreated
-		case "/v2.8/ad-settings", "/v2.8/email-code-validate/start", "/v2.8/country", "/v2.8/validation-start":
+		case "/v2.8/ad-settings", "/v2.8/email-code-validate/start", "/v2.8/country":
+			status = http.StatusOK
+		case "/v2.8/validation-start":
+			vstart++
 			status = http.StatusOK
 		case "/v2.8/verifykit-result":
 			status = http.StatusOK
@@ -372,6 +398,9 @@ func TestRegisterHandshake(t *testing.T) {
 	cred, err := c.Register("628123456789", "test-account")
 	if err != nil {
 		t.Fatalf("Register: %v", err)
+	}
+	if vstart != 2 {
+		t.Fatalf("validation-start calls = %d, want 2 (init steps + after VerifyKit start, as gtc.py)", vstart)
 	}
 	if cred.Token != "reg-token" {
 		t.Errorf("cred.Token = %q, want reg-token", cred.Token)

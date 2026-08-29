@@ -539,14 +539,14 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 	}
 	steps := []step{
 		{"/v2.8/init-basic", cloneMap(base), http.StatusCreated},
-		{"/v2.8/ad-settings", withMap(base, "source", "init"), http.StatusOK},
+		{"/v2.8/ad-settings", map[string]any{"source": "init", "token": token}, http.StatusOK},
 		{"/v2.8/init-intro", withMap(base, "hasRouting", false), http.StatusCreated},
 		{"/v2.8/email-code-validate/start", map[string]any{
-			"email":    fmt.Sprintf("user%d@gmail.com", randInt(1e6, 1e9)),
-			"fullName": fmt.Sprintf("User%d", randInt(1e6, 1e9)),
+			"email":    fmt.Sprintf("user%d@gmail.com", randInt(10_000_000, 100_000_000)),
+			"fullName": fmt.Sprintf("User%d", randInt(1000, 1_000_000)),
 			"token":    token,
 		}, http.StatusOK},
-		{"/v2.8/country", withMap(base, "countryCode", "ID"), http.StatusOK},
+		{"/v2.8/country", map[string]any{"countryCode": "ID", "token": token}, http.StatusOK},
 		{"/v2.8/validation-start", map[string]any{
 			"app":               "verifykit",
 			"countryCode":       "id",
@@ -598,6 +598,17 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 	if deeplink == "" || reference == "" {
 		return Credential{}, fmt.Errorf("vfk start: missing deeplink/reference")
 	}
+	// Second /v2.8/validation-start after the VerifyKit handshake, exactly as
+	// gtc.py does (once in the init steps, once here before the WhatsApp step).
+	if _, _, err := c.gtcCall("/v2.8/validation-start", map[string]any{
+		"app":               "verifykit",
+		"countryCode":       "id",
+		"notificationToken": "",
+		"token":             token,
+	}, token, finalKey, deviceID, true); err != nil {
+		return Credential{}, fmt.Errorf("validation-start (2nd): %w", err)
+	}
+
 	// Surface the code so the caller can complete the WhatsApp send.
 	if code := extractCode(deeplink); code != "" {
 		fmt.Printf("WhatsApp verification code: %s\nDeeplink: %s\nSend this code via WhatsApp, then the server will confirm.\n", code, deeplink)
