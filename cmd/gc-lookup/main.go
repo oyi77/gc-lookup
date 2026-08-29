@@ -50,10 +50,10 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `gc-lookup — GetContact lookup CLI (port of gtc.py)
 
 Usage:
-  gc-lookup search [--source profile|tags] <phone>
-  gc-lookup subscription
-  gc-lookup refresh-code
-  gc-lookup verify-code <code>
+  gc-lookup search [--source profile|tags] [--account NAME] [--rotate] <phone>
+  gc-lookup subscription [--account NAME] [--rotate]
+  gc-lookup refresh-code [--account NAME]
+  gc-lookup verify-code <code> [--account NAME]
   gc-lookup register <phone> [--name desc]
   gc-lookup cred list|use <name>|remove <name>|path
   gc-lookup help
@@ -117,6 +117,56 @@ func activeCred(s *client.Store) (client.Credential, error) {
 	return cred, nil
 }
 
+// credForAccount resolves the credential to use: an explicit --account name,
+// else the active credential.
+func credForAccount(s *client.Store, account string) (client.Credential, error) {
+	if account == "" {
+		return activeCred(s)
+	}
+	cred, ok := s.Credentials[account]
+	if !ok {
+		return client.Credential{}, fmt.Errorf("no credential named %q (stored: %v)", account, sortedNames(s))
+	}
+	return cred, nil
+}
+
+func sortedNames(s *client.Store) []string {
+	names := make([]string, 0, len(s.Credentials))
+	for n := range s.Credentials {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func without(names []string, exclude string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		if n != exclude {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// rotationOrder returns the credentials to try in order: active first, then the
+// rest alphabetically. Each entry carries the account name for reporting.
+func rotationOrder(s *client.Store) []string {
+	names := sortedNames(s)
+	if s.Active != "" {
+		names = append([]string{s.Active}, without(names, s.Active)...)
+	}
+	return names
+}
+
+func printSearchResult(res *client.SearchResult, source string) {
+	if source == "tags" {
+		printJSON(res.Tags)
+	} else {
+		printJSON(res.Profile)
+	}
+}
+
 func fatal(err error) {
 	fmt.Fprintf(os.Stderr, "gc-lookup: %v\n", err)
 	os.Exit(1)
@@ -142,11 +192,13 @@ func short(s string) string {
 func cmdSearch(args []string) {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	source := fs.String("source", "profile", "result to show: profile|tags")
+	account := fs.String("account", "", "credential name (default: active)")
+	rotate := fs.Bool("rotate", false, "try each credential in rotation until one succeeds")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: gc-lookup search [--source profile|tags] <phone>")
+		fmt.Fprintln(os.Stderr, "usage: gc-lookup search [--source profile|tags] [--account NAME] [--rotate] <phone>")
 		os.Exit(2)
 	}
 	if *source != "profile" && *source != "tags" {
@@ -157,23 +209,51 @@ func cmdSearch(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	cred, err := activeCred(s)
+	phone := fs.Arg(0)
+
+	if *rotate {
+		searchRotate(s, phone, *source)
+		return
+	}
+
+	cred, err := credForAccount(s, *account)
 	if err != nil {
 		fatal(err)
 	}
-	res, err := newClient(cred).Search(fs.Arg(0), *source)
+	res, err := newClient(cred).Search(phone, *source)
 	if err != nil {
 		fatal(err)
 	}
-	if *source == "tags" {
-		printJSON(res.Tags)
-	} else {
-		printJSON(res.Profile)
+	printSearchResult(res, *source)
+}
+
+// searchRotate tries every stored credential until one succeeds, reporting the
+// account that produced the result. This spreads quota across accounts.
+func searchRotate(s *client.Store, phone, source string) {
+	names := rotationOrder(s)
+	if len(names) == 0 {
+		fatal(fmt.Errorf("no credentials stored: run 'gc-lookup register' or 'gc-lookup cred use <name>'"))
 	}
+	var lastErr error
+	for _, name := range names {
+		cred := s.Credentials[name]
+		res, err := newClient(cred).Search(phone, source)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gc-lookup: account %q failed: %v\n", name, err)
+			lastErr = err
+			continue
+		}
+		fmt.Fprintf(os.Stderr, "gc-lookup: result from account %q\n", name)
+		printSearchResult(res, source)
+		return
+	}
+	fatal(lastErr)
 }
 
 func cmdSubscription(args []string) {
 	fs := flag.NewFlagSet("subscription", flag.ContinueOnError)
+	account := fs.String("account", "", "credential name (default: active)")
+	rotate := fs.Bool("rotate", false, "show quota for every stored credential")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -181,23 +261,50 @@ func cmdSubscription(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	cred, err := activeCred(s)
+
+	if *rotate {
+		names := rotationOrder(s)
+		if len(names) == 0 {
+			fatal(fmt.Errorf("no credentials stored"))
+		}
+		for _, name := range names {
+			info, err := newClient(s.Credentials[name]).Subscription()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "gc-lookup: %s: %v\n", name, err)
+				continue
+			}
+			printQuota(name, info)
+		}
+		return
+	}
+
+	cred, err := credForAccount(s, *account)
 	if err != nil {
 		fatal(err)
+	}
+	name := *account
+	if name == "" {
+		name = s.Active
 	}
 	info, err := newClient(cred).Subscription()
 	if err != nil {
 		fatal(err)
 	}
-	fmt.Printf("search:       %d/%d remaining\n", info.Search.RemainingCount, info.Search.Limit)
-	fmt.Printf("numberDetail: %d/%d remaining\n", info.NumberDetail.RemainingCount, info.NumberDetail.Limit)
+	printQuota(name, info)
+}
+
+func printQuota(name string, info *client.SubscriptionInfo) {
+	fmt.Printf("%s: search %d/%d, numberDetail %d/%d", name,
+		info.Search.RemainingCount, info.Search.Limit, info.NumberDetail.RemainingCount, info.NumberDetail.Limit)
 	if info.RenewDate != "" {
-		fmt.Printf("renewDate:    %s\n", info.RenewDate)
+		fmt.Printf(", renew %s", info.RenewDate)
 	}
+	fmt.Println()
 }
 
 func cmdRefreshCode(args []string) {
 	fs := flag.NewFlagSet("refresh-code", flag.ContinueOnError)
+	account := fs.String("account", "", "credential name (default: active)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -205,7 +312,7 @@ func cmdRefreshCode(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	cred, err := activeCred(s)
+	cred, err := credForAccount(s, *account)
 	if err != nil {
 		fatal(err)
 	}
@@ -218,6 +325,7 @@ func cmdRefreshCode(args []string) {
 
 func cmdVerifyCode(args []string) {
 	fs := flag.NewFlagSet("verify-code", flag.ContinueOnError)
+	account := fs.String("account", "", "credential name (default: active)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
@@ -229,7 +337,7 @@ func cmdVerifyCode(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	cred, err := activeCred(s)
+	cred, err := credForAccount(s, *account)
 	if err != nil {
 		fatal(err)
 	}

@@ -250,3 +250,155 @@ func TestCmdRegisterSuccess(t *testing.T) {
 		t.Errorf("active = %q, want acc", s.Active)
 	}
 }
+
+// --- rotation ---------------------------------------------------------------
+
+const testFinalKeyB = "ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100"
+
+// rotationMock serves searches keyed by x-token; accounts whose token equals
+// failToken get an HTTP 403 (quota exhausted / blocked), others succeed.
+func rotationMock(t *testing.T, tokenKey map[string]string, failToken string) func(req *http.Request) (*http.Response, error) {
+	return func(req *http.Request) (*http.Response, error) {
+		token := req.Header.Get("x-token")
+		if token == failToken {
+			body, _ := json.Marshal(map[string]any{"meta": map[string]any{"httpStatusCode": 403}})
+			return &http.Response{
+				StatusCode: http.StatusForbidden,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewReader(body)),
+			}, nil
+		}
+		key := tokenKey[token]
+		var env struct {
+			Data string `json:"data"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&env); err != nil {
+			return nil, err
+		}
+		if _, err := crypto.DecryptFromB64(env.Data, key); err != nil {
+			return nil, fmt.Errorf("decrypt for token %s: %w", token, err)
+		}
+		var result map[string]any
+		if req.URL.Path == "/v2.8/subscription" {
+			result = map[string]any{"subscriptionInfo": map[string]any{
+				"usage": map[string]any{
+					"search":       map[string]any{"remainingCount": 42, "limit": 100},
+					"numberDetail": map[string]any{"remainingCount": 7, "limit": 20},
+				},
+				"renewDate": "2026-09-01T00:00:00Z",
+			}}
+		} else {
+			result = map[string]any{"profile": map[string]any{"name": "Rotated User", "token": token}, "tags": []any{}}
+		}
+		body, _ := json.Marshal(map[string]any{"meta": map[string]any{"httpStatusCode": 200}, "result": result})
+		enc, _ := crypto.EncryptToB64(string(body), key)
+		respBody, _ := json.Marshal(map[string]any{"data": enc})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(bytes.NewReader(respBody)),
+		}, nil
+	}
+}
+
+func seedRotatingStore(t *testing.T) {
+	t.Helper()
+	t.Setenv("GTC_CONFIG_DIR", t.TempDir())
+	s := &client.Store{Active: "acc-a", Credentials: map[string]client.Credential{
+		"acc-a": {Description: "acc-a", Token: "tok-a", FinalKey: testFinalKey, ClientDeviceID: "dev-1"},
+		"acc-b": {Description: "acc-b", Token: "tok-b", FinalKey: testFinalKeyB, ClientDeviceID: "dev-2"},
+	}}
+	if err := saveStore(s); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRotationOrderActiveFirst(t *testing.T) {
+	s := &client.Store{Active: "acc-b", Credentials: map[string]client.Credential{
+		"acc-a": {}, "acc-b": {}, "acc-c": {},
+	}}
+	got := rotationOrder(s)
+	if len(got) != 3 || got[0] != "acc-b" {
+		t.Fatalf("rotationOrder = %v, want acc-b first", got)
+	}
+	// active not present -> alphabetical
+	s.Active = ""
+	got = rotationOrder(s)
+	if got[0] != "acc-a" || got[2] != "acc-c" {
+		t.Fatalf("rotationOrder = %v, want alphabetical", got)
+	}
+}
+
+func TestCredForAccount(t *testing.T) {
+	s := &client.Store{Active: "acc-a", Credentials: map[string]client.Credential{
+		"acc-a": {Token: "t1"}, "acc-b": {Token: "t2"},
+	}}
+	cred, err := credForAccount(s, "")
+	if err != nil || cred.Token != "t1" {
+		t.Fatalf("credForAccount(active) = %+v, err=%v", cred, err)
+	}
+	cred, err = credForAccount(s, "acc-b")
+	if err != nil || cred.Token != "t2" {
+		t.Fatalf("credForAccount(acc-b) = %+v, err=%v", cred, err)
+	}
+	if _, err := credForAccount(s, "ghost"); err == nil {
+		t.Fatal("expected error for unknown account")
+	}
+}
+
+func TestSearchRotateSkipsFailedAccount(t *testing.T) {
+	seedRotatingStore(t)
+	old := newClient
+	newClient = func(cred client.Credential) *client.Client {
+		return client.NewWithDo(cred, rotationMock(t, map[string]string{
+			"tok-a": testFinalKey, "tok-b": testFinalKeyB,
+		}, "tok-a"))
+	}
+	t.Cleanup(func() { newClient = old })
+
+	out := captureStdout(t, func() { cmdSearch([]string{"--rotate", "+628123456789"}) })
+	if !strings.Contains(out, "Rotated User") {
+		t.Errorf("search --rotate output = %q, want rotated result", out)
+	}
+	if !strings.Contains(out, "tok-b") {
+		t.Errorf("search --rotate output = %q, want result from acc-b (tok-b)", out)
+	}
+	if strings.Contains(out, "tok-a") {
+		t.Errorf("search --rotate output = %q, should not use failed acc-a", out)
+	}
+}
+
+func TestSearchRotateReportsAccountOnStderr(t *testing.T) {
+	seedRotatingStore(t)
+	old := newClient
+	newClient = func(cred client.Credential) *client.Client {
+		return client.NewWithDo(cred, rotationMock(t, map[string]string{
+			"tok-a": testFinalKey, "tok-b": testFinalKeyB,
+		}, "tok-a"))
+	}
+	t.Cleanup(func() { newClient = old })
+
+	errOut := captureStderr(t, func() { cmdSearch([]string{"--rotate", "+628123456789"}) })
+	if !strings.Contains(errOut, `account "acc-b"`) {
+		t.Errorf("stderr = %q, want result from acc-b", errOut)
+	}
+	if !strings.Contains(errOut, "acc-a") {
+		t.Errorf("stderr = %q, want acc-a failure reported", errOut)
+	}
+}
+
+func TestSubscriptionRotateAll(t *testing.T) {
+	seedRotatingStore(t)
+	old := newClient
+	newClient = func(cred client.Credential) *client.Client {
+		return client.NewWithDo(cred, rotationMock(t, map[string]string{
+			"tok-a": testFinalKey, "tok-b": testFinalKeyB,
+		}, ""))
+	}
+	t.Cleanup(func() { newClient = old })
+
+	out := captureStdout(t, func() { cmdSubscription([]string{"--rotate"}) })
+	if !strings.Contains(out, "acc-a:") || !strings.Contains(out, "acc-b:") {
+		t.Errorf("subscription --rotate output = %q, want both accounts", out)
+	}
+}
