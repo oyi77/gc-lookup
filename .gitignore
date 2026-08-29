@@ -1,0 +1,12 @@
+# Binaries
+/gc-lookup
+*.exe
+*.test
+*.out
+
+# Credentials — never store in repo
+credentials.json
+*.session
+
+# OS / editor
+.DS_Store
