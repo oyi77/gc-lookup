@@ -741,3 +741,74 @@ func TestMarshalRawMatchesPythonReference(t *testing.T) {
 		t.Fatalf("marshalRaw = %q\n       want = %q", string(got), want)
 	}
 }
+
+// TestRegisterPollsCheckUntilConfirmed proves Register retries /v2.0/check until
+// the WhatsApp side is confirmed (mock returns no sessionId on the first call).
+func TestRegisterPollsCheckUntilConfirmed(t *testing.T) {
+	finalKey := ""
+	checkCalls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.8/register" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			raw, _ := marshalRaw(payload)
+			checkSig(t, r, string(raw), hmacKey)
+			peer, _ := payload["peerKey"].(float64)
+			finalKey = crypto.DHFinalKey(testServerPriv, int64(peer))
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": map[string]any{
+					"token":     "reg-token",
+					"serverKey": crypto.DHExp(crypto.DH_G, testServerPriv),
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v2.0/") {
+			plain := decryptBody(t, r, vfkFinalKey)
+			_ = plain
+			switch r.URL.Path {
+			case "/v2.0/check":
+				checkCalls++
+				result := map[string]any{}
+				if checkCalls > 1 {
+					result = map[string]any{"sessionId": "sess-1"}
+				}
+				writeEncrypted(t, w, result, vfkFinalKey)
+				return
+			case "/v2.0/start":
+				result := map[string]any{"deeplink": "https://wa.me/628123456789?text=*ABC-123*", "reference": "ref-1"}
+				writeEncrypted(t, w, result, vfkFinalKey)
+				return
+			default:
+				writeEncrypted(t, w, map[string]any{}, vfkFinalKey)
+				return
+			}
+		}
+		plain := decryptBody(t, r, finalKey)
+		checkSig(t, r, plain, hmacKey)
+		status := http.StatusOK
+		if r.URL.Path == "/v2.8/init-basic" || r.URL.Path == "/v2.8/init-intro" {
+			status = http.StatusCreated
+		}
+		if r.URL.Path == "/v2.8/verifykit-result" {
+			writeEncrypted(t, w, map[string]any{"validationDate": "2026-08-29T00:00:00Z"}, finalKey)
+			return
+		}
+		w.WriteHeader(status)
+		writeEncrypted(t, w, map[string]any{}, finalKey)
+	}))
+	defer srv.Close()
+
+	c := newTestClient(srv, Credential{})
+	cred, err := c.Register("628123456789", "test")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	if cred.ValidationDate != "2026-08-29T00:00:00Z" {
+		t.Errorf("validationDate = %q", cred.ValidationDate)
+	}
+	if checkCalls < 2 {
+		t.Fatalf("/v2.0/check called %d times, want >= 2 (polling retry)", checkCalls)
+	}
+}

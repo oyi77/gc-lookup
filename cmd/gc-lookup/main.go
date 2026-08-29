@@ -146,7 +146,7 @@ func cmdSearch(args []string) {
 		os.Exit(2)
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: gc-lookup search <phone> [--source profile|tags]")
+		fmt.Fprintln(os.Stderr, "usage: gc-lookup search [--source profile|tags] <phone>")
 		os.Exit(2)
 	}
 	if *source != "profile" && *source != "tags" {

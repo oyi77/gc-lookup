@@ -513,6 +513,13 @@ var codeValidRe = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+$`)
 // send step is interactive: the CLI prints the returned deeplink/code and the
 // caller must send that WhatsApp message; verifykit-result only succeeds once
 // the WhatsApp side is confirmed.
+// vfkCheckAttempts/Interval bound how long Register polls /v2.0/check for the
+// WhatsApp confirmation (gtc.py blocks on input(); we poll instead).
+const (
+	vfkCheckAttempts = 30
+	vfkCheckInterval = 2 * time.Second
+)
+
 func (c *Client) Register(phone, description string) (Credential, error) {
 	priv, pub, err := crypto.DHKeypair()
 	if err != nil {
@@ -649,13 +656,25 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 		fmt.Printf("WhatsApp deeplink: %s\n", deeplink)
 	}
 
-	_, checkParsed, err := c.vfkCall("/v2.0/check", map[string]any{"reference": reference, "bundleId": bundleID}, deviceID)
-	if err != nil {
-		return Credential{}, fmt.Errorf("vfk check: %w", err)
+	// The VerifyKit check only succeeds once the WhatsApp side is confirmed.
+	// gtc.py blocks on input(); we poll until confirmed so the CLI works
+	// interactively without reading stdin.
+	fmt.Println("Waiting for WhatsApp confirmation...")
+	var sessionID string
+	for attempt := 0; attempt < vfkCheckAttempts; attempt++ {
+		_, checkParsed, err := c.vfkCall("/v2.0/check", map[string]any{"reference": reference, "bundleId": bundleID}, deviceID)
+		if err != nil {
+			return Credential{}, fmt.Errorf("vfk check: %w", err)
+		}
+		sessionID = digStr(checkParsed, "result", "sessionId")
+		if sessionID != "" {
+			break
+		}
+		time.Sleep(vfkCheckInterval)
 	}
-	sessionID := digStr(checkParsed, "result", "sessionId")
 	if sessionID == "" {
-		return Credential{}, fmt.Errorf("vfk check: missing sessionId")
+		return Credential{}, fmt.Errorf("verification not completed within %s: send the WhatsApp code and retry",
+			time.Duration(vfkCheckAttempts)*vfkCheckInterval)
 	}
 
 	_, vkParsed, err := c.gtcCall("/v2.8/verifykit-result", map[string]any{"sessionId": sessionID, "token": token}, token, finalKey, deviceID, true)
