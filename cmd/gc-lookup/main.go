@@ -15,6 +15,10 @@ import (
 	"github.com/oyi77/gc-lookup/internal/client"
 )
 
+// newClient is a function variable so tests can substitute a client whose
+// transport serves synthetic protocol responses (no network).
+var newClient = client.New
+
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -157,7 +161,7 @@ func cmdSearch(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	res, err := client.New(cred).Search(fs.Arg(0), *source)
+	res, err := newClient(cred).Search(fs.Arg(0), *source)
 	if err != nil {
 		fatal(err)
 	}
@@ -181,7 +185,7 @@ func cmdSubscription(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	info, err := client.New(cred).Subscription()
+	info, err := newClient(cred).Subscription()
 	if err != nil {
 		fatal(err)
 	}
@@ -205,7 +209,7 @@ func cmdRefreshCode(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	parsed, err := client.New(cred).RefreshCode()
+	parsed, err := newClient(cred).RefreshCode()
 	if err != nil {
 		fatal(err)
 	}
@@ -229,7 +233,7 @@ func cmdVerifyCode(args []string) {
 	if err != nil {
 		fatal(err)
 	}
-	if err := client.New(cred).VerifyCode(fs.Arg(0)); err != nil {
+	if err := newClient(cred).VerifyCode(fs.Arg(0)); err != nil {
 		fatal(err)
 	}
 	fmt.Println("code accepted")
@@ -250,7 +254,7 @@ func cmdRegister(args []string) {
 	if desc == "" {
 		desc = phone
 	}
-	cred, err := client.New(client.Credential{}).Register(phone, desc)
+	cred, err := newClient(client.Credential{}).Register(phone, desc)
 	if err != nil {
 		fatal(err)
 	}
