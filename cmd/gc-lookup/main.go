@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/oyi77/gc-lookup/internal/client"
 )
@@ -50,7 +51,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `gc-lookup — GetContact lookup CLI (port of gtc.py)
 
 Usage:
-  gc-lookup search [--source profile|tags] [--account NAME] [--rotate] <phone>
+  gc-lookup search [--source profile|tags] [--account NAME] [--rotate] [--no-cache] [--ttl N] <phone>
   gc-lookup subscription [--account NAME] [--rotate]
   gc-lookup refresh-code [--account NAME]
   gc-lookup verify-code <code> [--account NAME]
@@ -194,25 +195,57 @@ func cmdSearch(args []string) {
 	source := fs.String("source", "profile", "result to show: profile|tags")
 	account := fs.String("account", "", "credential name (default: active)")
 	rotate := fs.Bool("rotate", false, "try each credential in rotation until one succeeds")
+	noCache := fs.Bool("no-cache", false, "force fresh lookup (ignore cache)")
+	ttlFlag := fs.Int("ttl", 0, "cache TTL in days (default: env GTC_CACHE_TTL or 7)")
 	if err := fs.Parse(args); err != nil {
 		os.Exit(2)
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: gc-lookup search [--source profile|tags] [--account NAME] [--rotate] <phone>")
+		fmt.Fprintln(os.Stderr, "usage: gc-lookup search [--source profile|tags] [--account NAME] [--rotate] [--no-cache] [--ttl N] <phone>")
 		os.Exit(2)
 	}
 	if *source != "profile" && *source != "tags" {
 		fmt.Fprintf(os.Stderr, "gc-lookup: invalid --source %q (want profile|tags)\n", *source)
 		os.Exit(2)
 	}
+	ttlDays := *ttlFlag
+	if ttlDays <= 0 {
+		ttlDays = defaultCacheTTL()
+	}
+	ttl := time.Duration(ttlDays) * 24 * time.Hour
+
+	phone := fs.Arg(0)
+
+	// Cache check — only serve a source whose data is actually cached (a
+	// profile-only search must not answer a tags query with null).
+	if !*noCache && !*rotate {
+		if e, ok := loadCached(phone, ttl); ok {
+			serve := false
+			if *source == "tags" && len(e.Tags) > 0 {
+				serve = true
+			}
+			if *source == "profile" && e.Profile != nil {
+				serve = true
+			}
+			if serve {
+				fmt.Fprintf(os.Stderr, "gc-lookup: cached result (fetched %s, TTL %d days)\n", e.FetchedAt.Format(time.RFC3339), ttlDays)
+				if *source == "tags" {
+					printJSON(e.Tags)
+				} else {
+					printJSON(e.Profile)
+				}
+				return
+			}
+		}
+	}
+
 	s, err := loadStore()
 	if err != nil {
 		fatal(err)
 	}
-	phone := fs.Arg(0)
 
 	if *rotate {
-		searchRotate(s, phone, *source)
+		searchRotate(s, phone, *source, ttl, ttlDays)
 		return
 	}
 
@@ -224,12 +257,32 @@ func cmdSearch(args []string) {
 	if err != nil {
 		fatal(err)
 	}
+	if !*noCache {
+		if err := saveCached(phone, res.Profile, res.Tags); err != nil {
+			fmt.Fprintf(os.Stderr, "gc-lookup: cache write error: %v\n", err)
+		}
+	}
 	printSearchResult(res, *source)
 }
 
 // searchRotate tries every stored credential until one succeeds, reporting the
 // account that produced the result. This spreads quota across accounts.
-func searchRotate(s *client.Store, phone, source string) {
+func searchRotate(s *client.Store, phone, source string, ttl time.Duration, ttlDays int) {
+	// Serve from cache when the requested source is present (preserves quota).
+	if e, ok := loadCached(phone, ttl); ok {
+		serve := false
+		if source == "tags" && len(e.Tags) > 0 {
+			serve = true
+		}
+		if source == "profile" && e.Profile != nil {
+			serve = true
+		}
+		if serve {
+			fmt.Fprintf(os.Stderr, "gc-lookup: cached result (fetched %s, TTL %d days)\n", e.FetchedAt.Format(time.RFC3339), ttlDays)
+			printSearchResult(&client.SearchResult{Profile: e.Profile, Tags: e.Tags}, source)
+			return
+		}
+	}
 	names := rotationOrder(s)
 	if len(names) == 0 {
 		fatal(fmt.Errorf("no credentials stored: run 'gc-lookup register' or 'gc-lookup cred use <name>'"))
@@ -244,6 +297,9 @@ func searchRotate(s *client.Store, phone, source string) {
 			continue
 		}
 		fmt.Fprintf(os.Stderr, "gc-lookup: result from account %q\n", name)
+		if err := saveCached(phone, res.Profile, res.Tags); err != nil {
+			fmt.Fprintf(os.Stderr, "gc-lookup: cache write error: %v\n", err)
+		}
 		printSearchResult(res, source)
 		return
 	}
