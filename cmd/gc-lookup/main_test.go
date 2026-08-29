@@ -189,3 +189,41 @@ func TestCmdCredLifecycle(t *testing.T) {
 		t.Errorf("path = %q, want %q", out, filepath.Join(dir, "credentials.json"))
 	}
 }
+
+func TestPrintJSON(t *testing.T) {
+	out := captureStdout(t, func() { printJSON(map[string]any{"a": 1}) })
+	if !strings.Contains(out, `"a": 1`) {
+		t.Errorf("printJSON = %q", out)
+	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	fn()
+	os.Stderr = old
+	_ = w.Close()
+	b, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestUsageOutput(t *testing.T) {
+	out := captureStderr(t, func() { usage() })
+	for _, want := range []string{"gc-lookup search", "gc-lookup register", "gc-lookup cred"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("usage missing %q: %q", want, out)
+		}
+	}
+	out2 := captureStderr(t, func() { credUsage() })
+	if !strings.Contains(out2, "cred list") {
+		t.Errorf("credUsage = %q", out2)
+	}
+}
