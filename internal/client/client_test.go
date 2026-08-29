@@ -281,7 +281,7 @@ func TestRegisterHandshake(t *testing.T) {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			raw, _ := json.Marshal(payload)
+			raw, _ := marshalRaw(payload)
 			checkSig(t, r, string(raw), hmacKey)
 			if payload["countryCode"] != "id" {
 				t.Fatalf("register countryCode = %v, want id", payload["countryCode"])
@@ -577,7 +577,7 @@ func TestRegisterRejectsNon201(t *testing.T) {
 		if r.URL.Path == "/v2.8/register" {
 			var payload map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			raw, _ := json.Marshal(payload)
+			raw, _ := marshalRaw(payload)
 			checkSig(t, r, string(raw), hmacKey)
 			w.WriteHeader(http.StatusOK) // wrong: expects 201
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"token": "t", "serverKey": 1}})
@@ -597,7 +597,7 @@ func TestRegisterRejectsMissingTokenServerKey(t *testing.T) {
 		if r.URL.Path == "/v2.8/register" {
 			var payload map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&payload)
-			raw, _ := json.Marshal(payload)
+			raw, _ := marshalRaw(payload)
 			checkSig(t, r, string(raw), hmacKey)
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{}})
@@ -620,5 +620,93 @@ func TestExtractCodeValidAndSingleSegment(t *testing.T) {
 	// Single segment fails the codeValidRe hyphen requirement.
 	if got := extractCode("https://wa.me/628123456789?text=*ABC*"); got != "" {
 		t.Errorf("extractCode(single segment) = %q, want empty", got)
+	}
+}
+
+// --- vfk status-code fidelity (gtc.py checks code != 200 on vfk init/country) --
+
+func TestRegisterVfkInitNon200(t *testing.T) {
+	finalKey := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.8/register" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			raw, _ := marshalRaw(payload)
+			checkSig(t, r, string(raw), hmacKey)
+			peer, _ := payload["peerKey"].(float64)
+			finalKey = crypto.DHFinalKey(testServerPriv, int64(peer))
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": map[string]any{
+					"token":     "reg-token",
+					"serverKey": crypto.DHExp(crypto.DH_G, testServerPriv),
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v2.0/") {
+			_ = decryptBody(t, r, vfkFinalKey)
+			w.WriteHeader(http.StatusInternalServerError)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "boom"})
+			return
+		}
+		plain := decryptBody(t, r, finalKey)
+		checkSig(t, r, plain, hmacKey)
+		status := http.StatusOK
+		if r.URL.Path == "/v2.8/init-basic" || r.URL.Path == "/v2.8/init-intro" {
+			status = http.StatusCreated
+		}
+		w.WriteHeader(status)
+		writeEncrypted(t, w, map[string]any{}, finalKey)
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, Credential{})
+	if _, err := c.Register("628123456789", "test"); err == nil || !strings.Contains(err.Error(), "vfk init: HTTP 500") {
+		t.Fatalf("Register error = %v, want vfk init: HTTP 500", err)
+	}
+}
+
+func TestRegisterVfkCountryNon200(t *testing.T) {
+	finalKey := ""
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.8/register" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			raw, _ := marshalRaw(payload)
+			checkSig(t, r, string(raw), hmacKey)
+			peer, _ := payload["peerKey"].(float64)
+			finalKey = crypto.DHFinalKey(testServerPriv, int64(peer))
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"result": map[string]any{
+					"token":     "reg-token",
+					"serverKey": crypto.DHExp(crypto.DH_G, testServerPriv),
+				},
+			})
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v2.0/") {
+			_ = decryptBody(t, r, vfkFinalKey)
+			if r.URL.Path == "/v2.0/init" {
+				writeEncrypted(t, w, map[string]any{}, vfkFinalKey)
+				return
+			}
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": "bad"})
+			return
+		}
+		plain := decryptBody(t, r, finalKey)
+		checkSig(t, r, plain, hmacKey)
+		status := http.StatusOK
+		if r.URL.Path == "/v2.8/init-basic" || r.URL.Path == "/v2.8/init-intro" {
+			status = http.StatusCreated
+		}
+		w.WriteHeader(status)
+		writeEncrypted(t, w, map[string]any{}, finalKey)
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, Credential{})
+	if _, err := c.Register("628123456789", "test"); err == nil || !strings.Contains(err.Error(), "vfk country: HTTP 400") {
+		t.Fatalf("Register error = %v, want vfk country: HTTP 400", err)
 	}
 }

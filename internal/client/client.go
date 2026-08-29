@@ -224,7 +224,7 @@ func (c *Client) gtcCall(endpoint string, payload map[string]any, token, finalKe
 // registerPost mirrors the registration call: x-encrypted "0", no x-token,
 // body is the raw json, response is plain JSON (not wrapped in data).
 func (c *Client) registerPost(endpoint string, payload map[string]any, deviceID string) (int, map[string]any, error) {
-	raw, err := json.Marshal(payload)
+	raw, err := marshalRaw(payload)
 	if err != nil {
 		return 0, nil, err
 	}
@@ -571,16 +571,20 @@ func (c *Client) Register(phone, description string) (Credential, error) {
 		"bundleId":    bundleID,
 		"timezone":    timeZone,
 	}
-	if _, _, err := c.vfkCall("/v2.0/init", withMap(vfkBasePayload,
+	if st, _, err := c.vfkCall("/v2.0/init", withMap(vfkBasePayload,
 		"isCallPermissionGranted", true,
 		"outsideCountryCode", "ID",
 		"outsidePhoneNumber", phone,
 		"installedApps", `{"whatsapp":0,"telegram":0,"viber":0}`,
 	), deviceID); err != nil {
 		return Credential{}, fmt.Errorf("vfk init: %w", err)
+	} else if st != http.StatusOK {
+		return Credential{}, fmt.Errorf("vfk init: HTTP %d", st)
 	}
-	if _, _, err := c.vfkCall("/v2.0/country", map[string]any{"countryCode": "ID", "bundleId": bundleID}, deviceID); err != nil {
+	if st, _, err := c.vfkCall("/v2.0/country", map[string]any{"countryCode": "ID", "bundleId": bundleID}, deviceID); err != nil {
 		return Credential{}, fmt.Errorf("vfk country: %w", err)
+	} else if st != http.StatusOK {
+		return Credential{}, fmt.Errorf("vfk country: HTTP %d", st)
 	}
 	_, startParsed, err := c.vfkCall("/v2.0/start", map[string]any{
 		"countryCode": "ID",
