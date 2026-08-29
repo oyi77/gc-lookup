@@ -9,9 +9,9 @@ Python reference exactly — any deviation breaks wire compatibility.
 | Metric | Value |
 |---|---|
 | Build | green (`go build ./...`) |
-| Tests | green (`go test ./...`) — 56 tests (24 client + 12 crypto + 20 cmd), no network (httptest) |
+| Tests | green (`go test ./...`) — 57 tests (24 client + 13 crypto + 20 cmd), no network (httptest) |
 | Race | clean (`go test -race ./...`) |
-| Coverage | 82.1% client / 90.0% crypto / 65.5% cmd |
+| Coverage | 82.1% client / 91.2% crypto / 65.5% cmd |
 | Cross-compile | green — linux/amd64, windows/amd64, darwin/arm64 |
 | Upstream | [`xdreizein666/getcontact-cli`](https://github.com/xdreizein666/getcontact-cli) `gtc.py` |
 
@@ -25,6 +25,20 @@ The GetContact API uses a custom crypto layer:
    PKCS7 padding. No GCM/CBC — this is the protocol as defined.
 3. **HMAC-SHA256** — every request signed with a fixed key:
    `base64(hmac_sha256(bytes.fromhex(key), "{ts}-{raw}"))`.
+
+## Fidelity
+
+Every constant, endpoint, header, and payload field mirrors `gtc.py`; the
+crypto layer is proven against golden vectors computed from the Python
+reference (HMAC, AES-256-ECB, DH). Request bodies use Python's exact
+serialization format (`json.dumps(ensure_ascii=False)` separators).
+
+One documented deviation: JSON object **key order**. Go sorts map keys
+alphabetically while the reference preserves Python dict insertion order.
+JSON objects are unordered and every HMAC is computed over the bytes actually
+sent, so this is semantically irrelevant — the server accepts either form.
+Where the reference's insertion order is already alphabetical (e.g. the
+register payload), the output is byte-identical.
 
 ## Usage
 

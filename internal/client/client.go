@@ -196,7 +196,7 @@ func (c *Client) gtcCall(endpoint string, payload map[string]any, token, finalKe
 		if e != nil {
 			return 0, nil, e
 		}
-		bodyBytes, e = json.Marshal(map[string]any{"data": enc})
+		bodyBytes, e = marshalRaw(map[string]any{"data": enc})
 		if e != nil {
 			return 0, nil, e
 		}

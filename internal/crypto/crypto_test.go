@@ -199,3 +199,16 @@ func TestDHGoldenValues(t *testing.T) {
 		t.Fatalf("DH final key not symmetric: %q != %q", sym, final)
 	}
 }
+
+func TestPKCS7UnpadInconsistentPadding(t *testing.T) {
+	// Valid: 3 pad bytes of value 3.
+	good := []byte{'a', 'b', 'c', 3, 3, 3}
+	if _, err := pkcs7Unpad(good); err != nil {
+		t.Fatalf("valid pad rejected: %v", err)
+	}
+	// Corrupt one pad byte: last byte claims 3 but middle pad byte is 2.
+	bad := []byte{'a', 'b', 'c', 3, 2, 3}
+	if _, err := pkcs7Unpad(bad); err == nil {
+		t.Fatal("expected error for inconsistent padding")
+	}
+}
