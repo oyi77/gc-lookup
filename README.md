@@ -9,9 +9,9 @@ Python reference exactly — any deviation breaks wire compatibility.
 | Metric | Value |
 |---|---|
 | Build | green (`go build ./...`) |
-| Tests | green (`go test ./...`) — 14 tests (8 client + 6 crypto), no network (httptest) |
+| Tests | green (`go test ./...`) — 38 tests (21 client + 10 crypto + 7 cmd), no network (httptest) |
 | Race | clean (`go test -race ./...`) |
-| Coverage | 76.6% client / 80.0% crypto |
+| Coverage | 82.2% client / 90.0% crypto / 30.4% cmd |
 | Cross-compile | green — linux/amd64, windows/amd64, darwin/arm64 |
 | Upstream | [`xdreizein666/getcontact-cli`](https://github.com/xdreizein666/getcontact-cli) `gtc.py` |
 

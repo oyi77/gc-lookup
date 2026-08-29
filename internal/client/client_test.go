@@ -389,3 +389,207 @@ func TestRegisterHandshake(t *testing.T) {
 		t.Errorf("cred.ValidationDate = %q", cred.ValidationDate)
 	}
 }
+
+// --- error branches + small helpers ----------------------------------------
+
+func TestNewWithDoDefaults(t *testing.T) {
+	c := NewWithDo(testCred(), http.DefaultClient.Do)
+	if c.Cred.Token != "test-token" {
+		t.Errorf("cred not carried: %+v", c.Cred)
+	}
+	if c.gtcURL != gtcBase || c.vfkURL != vfkBase {
+		t.Errorf("URL defaults: gtc=%q vfk=%q, want %q/%q", c.gtcURL, c.vfkURL, gtcBase, vfkBase)
+	}
+	if c.do == nil {
+		t.Error("do is nil")
+	}
+}
+
+func TestSearchHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := decryptBody(t, r, testFinalKey)
+		checkSig(t, r, plain, hmacKey)
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"meta": map[string]any{"httpStatusCode": 500}})
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, testCred())
+	if _, err := c.Search("1234567890", "profile"); err == nil || !strings.Contains(err.Error(), "500") {
+		t.Fatalf("Search error = %v, want mention of 500", err)
+	}
+}
+
+func TestSubscriptionHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := decryptBody(t, r, testFinalKey)
+		checkSig(t, r, plain, hmacKey)
+		w.WriteHeader(http.StatusForbidden)
+		_ = json.NewEncoder(w).Encode(map[string]any{"meta": map[string]any{"httpStatusCode": 403}})
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, testCred())
+	if _, err := c.Subscription(); err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("Subscription error = %v, want mention of 403", err)
+	}
+}
+
+func TestRefreshCodeHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := decryptBody(t, r, testFinalKey)
+		checkSig(t, r, plain, hmacKey)
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"meta": map[string]any{"httpStatusCode": 400}})
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, testCred())
+	if _, err := c.RefreshCode(); err == nil || !strings.Contains(err.Error(), "400") {
+		t.Fatalf("RefreshCode error = %v, want mention of 400", err)
+	}
+}
+
+func TestVerifyCodeHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := decryptBody(t, r, testFinalKey)
+		checkSig(t, r, plain, hmacKey)
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]any{"meta": map[string]any{"httpStatusCode": 401}})
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, testCred())
+	if err := c.VerifyCode("ABC-123"); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("VerifyCode error = %v, want mention of 401", err)
+	}
+}
+
+func TestVerifyCodeMetaError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plain := decryptBody(t, r, testFinalKey)
+		checkSig(t, r, plain, hmacKey)
+		w.WriteHeader(http.StatusOK)
+		raw, _ := json.Marshal(map[string]any{
+			"meta": map[string]any{"httpStatusCode": 401, "message": "invalid code"},
+		})
+		enc, _ := crypto.EncryptToB64(string(raw), testFinalKey)
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": enc})
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, testCred())
+	if err := c.VerifyCode("WRONG"); err == nil || !strings.Contains(err.Error(), "401") {
+		t.Fatalf("VerifyCode meta error = %v, want mention of 401", err)
+	}
+}
+
+func TestDigHelpers(t *testing.T) {
+	obj := map[string]any{
+		"a": map[string]any{"b": "str", "n": 7},
+	}
+	// dig on non-map intermediate returns nil.
+	if got := dig(obj, "a", "b", "c"); got != nil {
+		t.Errorf("dig nested-non-map = %v, want nil", got)
+	}
+	if got := digStr(obj, "a", "b"); got != "str" {
+		t.Errorf("digStr = %q, want str", got)
+	}
+	// digStr on non-string value returns "".
+	if got := digStr(obj, "a", "n"); got != "" {
+		t.Errorf("digStr non-string = %q, want empty", got)
+	}
+	// digInt with native int value (not JSON float64).
+	if got := digInt(map[string]any{"x": int(5)}, "x"); got != 5 {
+		t.Errorf("digInt native int = %d, want 5", got)
+	}
+	if got := digInt(map[string]any{"x": "nope"}, "x"); got != 0 {
+		t.Errorf("digInt wrong type = %d, want 0", got)
+	}
+	// digInt on missing key.
+	if got := digInt(obj, "zzz"); got != 0 {
+		t.Errorf("digInt missing = %d, want 0", got)
+	}
+}
+
+func TestExtractCodeInvalid(t *testing.T) {
+	// No valid code pattern (codeValidRe requires alnum-alnum).
+	if got := extractCode("https://wa.me/628123456789?text=hello"); got != "" {
+		t.Errorf("extractCode(invalid) = %q, want empty", got)
+	}
+	if got := extractCode(""); got != "" {
+		t.Errorf("extractCode(empty) = %q, want empty", got)
+	}
+}
+
+func TestRandIntEdges(t *testing.T) {
+	if got := randInt(5, 5); got != 5 {
+		t.Errorf("randInt(5,5) = %d, want 5", got)
+	}
+	if got := randInt(9, 3); got != 9 {
+		t.Errorf("randInt(9,3) = %d, want 9", got)
+	}
+	for i := 0; i < 100; i++ {
+		v := randInt(10, 20)
+		if v < 10 || v >= 20 {
+			t.Fatalf("randInt out of range: %d", v)
+		}
+	}
+}
+
+func TestBoolTo01(t *testing.T) {
+	if got := boolTo01(true); got != "1" {
+		t.Errorf("boolTo01(true) = %q", got)
+	}
+	if got := boolTo01(false); got != "0" {
+		t.Errorf("boolTo01(false) = %q", got)
+	}
+}
+
+// --- Register error branches + extractCode valid path -----------------------
+
+func TestRegisterRejectsNon201(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.8/register" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			raw, _ := json.Marshal(payload)
+			checkSig(t, r, string(raw), hmacKey)
+			w.WriteHeader(http.StatusOK) // wrong: expects 201
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{"token": "t", "serverKey": 1}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, Credential{})
+	if _, err := c.Register("628123456789", "test"); err == nil || !strings.Contains(err.Error(), "201") {
+		t.Fatalf("Register error = %v, want mention of 201", err)
+	}
+}
+
+func TestRegisterRejectsMissingTokenServerKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2.8/register" {
+			var payload map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&payload)
+			raw, _ := json.Marshal(payload)
+			checkSig(t, r, string(raw), hmacKey)
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]any{}})
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	c := newTestClient(srv, Credential{})
+	if _, err := c.Register("628123456789", "test"); err == nil || !strings.Contains(err.Error(), "token/serverKey") {
+		t.Fatalf("Register error = %v, want mention of token/serverKey", err)
+	}
+}
+
+func TestExtractCodeValidAndSingleSegment(t *testing.T) {
+	// Literal asterisks (as the real VerifyKit deeplink contains) yield a code.
+	if got := extractCode("https://wa.me/628123456789?text=*ABC-123*"); got != "ABC-123" {
+		t.Errorf("extractCode(valid) = %q, want ABC-123", got)
+	}
+	// Single segment fails the codeValidRe hyphen requirement.
+	if got := extractCode("https://wa.me/628123456789?text=*ABC*"); got != "" {
+		t.Errorf("extractCode(single segment) = %q, want empty", got)
+	}
+}

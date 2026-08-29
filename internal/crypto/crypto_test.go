@@ -120,3 +120,45 @@ func TestPKCS7UnpadRejectsGarbage(t *testing.T) {
 		t.Fatalf("valid pad rejected: %v", err)
 	}
 }
+
+func TestEncryptToB64BadKeyHex(t *testing.T) {
+	if _, err := EncryptToB64("data", "zzz"); err == nil {
+		t.Fatal("expected error for non-hex key")
+	}
+	// Odd-length hex string also fails decode.
+	if _, err := EncryptToB64("data", "abc"); err == nil {
+		t.Fatal("expected error for odd-length key hex")
+	}
+	// 31-byte key fails AES-256 (needs exactly 32 bytes).
+	if _, err := EncryptToB64("data", "00112233445566778899aabbccddeeff00112233445566778899aabbccddee"); err == nil {
+		t.Fatal("expected error for 31-byte key")
+	}
+}
+
+func TestDecryptFromB64Errors(t *testing.T) {
+	// Bad key hex.
+	if _, err := DecryptFromB64("AAAA", "zzz"); err == nil {
+		t.Fatal("expected error for non-hex key")
+	}
+	// Bad base64 payload.
+	if _, err := DecryptFromB64("!!!not-base64!!!", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"); err == nil {
+		t.Fatal("expected error for bad base64")
+	}
+	// Valid base64 but not block-aligned (15 bytes).
+	if _, err := DecryptFromB64("AAAAAAAAAAAAAAAAAAAAAAA=", "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"); err == nil {
+		t.Fatal("expected error for non-block-aligned ciphertext")
+	}
+}
+
+func TestHMACSignBadKey(t *testing.T) {
+	if _, err := HMACSign("1700000000000", `{"a":1}`, "nothex"); err == nil {
+		t.Fatal("expected error for non-hex key")
+	}
+}
+
+func TestAESECBWrongKeyLength(t *testing.T) {
+	// 16-byte key must be rejected (AES-256 needs 32).
+	if _, err := EncryptToB64("data", "00112233445566778899aabbccddeeff"); err == nil {
+		t.Fatal("expected error for 16-byte key")
+	}
+}
