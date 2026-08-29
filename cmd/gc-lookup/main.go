@@ -50,7 +50,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `gc-lookup — GetContact lookup CLI (port of gtc.py)
 
 Usage:
-  gc-lookup search <phone> [--source profile|tags]
+  gc-lookup search [--source profile|tags] <phone>
   gc-lookup subscription
   gc-lookup refresh-code
   gc-lookup verify-code <code>
