@@ -9,7 +9,7 @@ Python reference exactly — any deviation breaks wire compatibility.
 | Metric | Value |
 |---|---|
 | Build | green (`go build ./...`) |
-| Tests | green (`go test ./...`) — 45 tests (21 client + 10 crypto + 14 cmd), no network (httptest) |
+| Tests | green (`go test ./...`) — 47 tests (21 client + 12 crypto + 14 cmd), no network (httptest) |
 | Race | clean (`go test -race ./...`) |
 | Coverage | 82.2% client / 90.0% crypto / 34.5% cmd |
 | Cross-compile | green — linux/amd64, windows/amd64, darwin/arm64 |

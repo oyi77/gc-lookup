@@ -2,7 +2,6 @@ package crypto
 
 import (
 	"crypto/aes"
-	"strings"
 	"testing"
 )
 
@@ -58,20 +57,16 @@ func TestHMACSignMatchesReference(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Precomputed expected value (Python: base64(hmac.new(bytes.fromhex(key), f"{ts}-{msg}", sha256).digest()))
-	const want = "2ZgQyXFJT4KgNz6Lz2Tq3Jv1P9f0q8yw4XmEoY7vLmA="
-	// NOTE: the literal above is illustrative; we assert structure instead of a hardcoded
-	// string because the exact value depends on the key — instead verify determinism + length.
-	if got == "" {
-		t.Fatal("empty signature")
-	}
-	if strings.Contains(got, "\n") {
-		t.Fatal("signature must not contain newline")
-	}
-	// Determinism
+	// Golden value computed from the Python reference (gtc.py _sig):
+	//   base64(hmac_sha256(bytes.fromhex(HMAC_KEY), f"1700000000000-{'{\"a\":1}}"))
+	const want = "dmVB2fDXcuVnDwf4A26xxc3exNrmNvDABUmemQneqTw="
+	// But also verify determinism as a second check.
 	again, _ := HMACSign(ts, msg, keyHex)
 	if got != again {
 		t.Fatal("HMACSign not deterministic")
+	}
+	if got != want {
+		t.Fatalf("HMACSign = %q, want %q (computed from reference gtc.py)", got, want)
 	}
 }
 
@@ -160,5 +155,47 @@ func TestAESECBWrongKeyLength(t *testing.T) {
 	// 16-byte key must be rejected (AES-256 needs 32).
 	if _, err := EncryptToB64("data", "00112233445566778899aabbccddeeff"); err == nil {
 		t.Fatal("expected error for 16-byte key")
+	}
+}
+
+func TestAESECBGoldenVector(t *testing.T) {
+	// Encryption of known plaintext with TEST_KEY, computed from gtc.py's
+	// encrypt() using the cryptography library:
+	//   base64(AES-256-ECB(pad('{"hello":"world"}')))
+	keyHex := "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+	ct, err := EncryptToB64(`{"hello":"world"}`, keyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "bbVDjluZZi2/OQoP3uv7VsP2kz+b9OqUs3/Dh73Az5A="
+	if ct != want {
+		t.Fatalf("EncryptToB64 = %q, want %q", ct, want)
+	}
+	// Round-trip.
+	got, err := DecryptFromB64(ct, keyHex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != `{"hello":"world"}` {
+		t.Fatalf("decrypt = %q", got)
+	}
+}
+
+func TestDHGoldenValues(t *testing.T) {
+	// DHExp(g^127 mod p) computed from Python: pow(7, 1234567, 900719898367).
+	pub1 := DHExp(DH_G, 1234567)
+	if pub1 != 325365675534 {
+		t.Fatalf("DHExp(7,1234567) = %d, want 325365675534 (from gtc.py)", pub1)
+	}
+	// DHFinalKey(priv=1234567, serverPub = 7^9876543 mod p).
+	serverPub := DHExp(DH_G, 9876543)
+	final := DHFinalKey(1234567, serverPub)
+	if final != "ade430f25aed6dba500d9caf324efb504b3699830587868ddbf1695bfafde484" {
+		t.Fatalf("DHFinalKey = %q, want ade430...484 (from gtc.py)", final)
+	}
+	// Symmetry: other side derives the same key.
+	sym := DHFinalKey(9876543, pub1)
+	if sym != final {
+		t.Fatalf("DH final key not symmetric: %q != %q", sym, final)
 	}
 }
